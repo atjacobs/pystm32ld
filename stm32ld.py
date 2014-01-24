@@ -51,6 +51,15 @@ class loader:
 		os.system("echo high > /sys/class/gpio/gpio115/direction")
 		time.sleep(0.5)
 	
+	def resetRelease(self):
+		# Release line
+		os.system("echo in > /sys/class/gpio/gpio115/direction")
+	
+	def resetHold(self):
+		# Make the line an output again
+		#os.system("echo in > /sys/class/gpio/gpio115/direction")
+		os.system("echo high > /sys/class/gpio/gpio115/direction")
+
 	def bootLow(self):
 		# Lower the boot line.
 		os.system("echo low > /sys/class/gpio/gpio112/direction")
@@ -308,11 +317,15 @@ if __name__ == "__main__":
 		exit(-1)	
 	
 	# Clear write protection.
+	ldr.resetRelease()
 	if (ldr.command(WPUN) > 0):
 		print "Cleared write protection."
 	else:
 		print "Failed to clear write protection."
 		exit(-1)
+	ldr.resetHold()
+	time.sleep(.5)
+	ldr.connectToBl()
 	
 	# Write the image. 
 	print "Writing image."
