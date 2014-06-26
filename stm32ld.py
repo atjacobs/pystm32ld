@@ -309,12 +309,12 @@ if __name__ == "__main__":
 	else:
 		print "Product ID:", printHex(productID)
 
-	## If flashing, erase and flash.
-	#if (ldr.command(ERASE) > 0):
-	#	print "erase successful."
-	#else:
-	#	print "Failed to erase device."
-	#	exit(-1)	
+	# If flashing, erase and flash.
+	if (ldr.command(ERASE) > 0):
+		print "erase successful."
+	else:
+		print "Failed to erase device."
+		exit(-1)	
 	
 	# Clear write protection.
 	if (ldr.command(WPUN) > 0):
