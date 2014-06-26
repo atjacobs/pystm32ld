@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-import serial, struct, os, time
+import serial, struct, os, time, sys
 import argparse
 
 parser = argparse.ArgumentParser(description="Boot loader for stm32.")
@@ -50,6 +50,11 @@ class loader:
 		time.sleep(.5)
 		os.system("echo high > /sys/class/gpio/gpio115/direction")
 		time.sleep(0.5)
+	
+	def bootLow(self):
+		# Lower the boot line.
+		os.system("echo low > /sys/class/gpio/gpio112/direction")
+		time.sleep(.5)
 
 	def reset(self):
 		# Ensure that the boot line is not high.
@@ -89,9 +94,7 @@ class loader:
 		connected = False
 		for i in range(3):
 			time.sleep(.1)
-			print "Reading {0} bytes.".format(self.serialPort.inWaiting())
 			data = self.serialPort.read(self.serialPort.inWaiting())
-			print "data:", map(hex,map(ord,data))
 			if "\x79" in data:
 				connected = True
 				break
@@ -119,7 +122,6 @@ class loader:
 		if not self.expect(ACK):
 			return -1
 		numberOfCommands = struct.unpack("B",self.serialPort.read())[0]
-		print "{0} commands.".format(numberOfCommands)
 		versionInt = struct.unpack("B",self.serialPort.read())[0]
 		version = (versionInt >> 4) + .1*(versionInt & 15)
 		self.commands = self.serialPort.read(numberOfCommands)
@@ -168,7 +170,6 @@ class loader:
 		checksum = self.checksum(address) 
 		for datum in address:
 			self.serialPort.write(datum)
-		print "Checksum of address", checksum
 		self.serialPort.write(struct.pack("B",checksum))
 		
 		if not self.expect(ACK):
@@ -184,7 +185,6 @@ class loader:
 		imageSize = os.stat(image).st_size
 		written = 0
 		writeNumber = 0
-		print "Writing {0} bytes".format(imageSize)
 		address = STM32_FLASH_START_ADDRESS
 		while True:
 			# Send write command.
@@ -195,12 +195,10 @@ class loader:
 				return -1
 			
 			#Send address + checksum
-			print "writing to:", struct.unpack(">I",STM32_FLASH_START_ADDRESS)[0] + written
 			address = struct.pack(">I",struct.unpack(">I",STM32_FLASH_START_ADDRESS)[0] + written)
 			checksum = self.checksum(address) 
 			for datum in address:
 				self.serialPort.write(datum)
-			print "Checksum of address", checksum
 			self.serialPort.write(struct.pack("B",checksum))
 			
 			if not self.expect(ACK):
@@ -213,39 +211,33 @@ class loader:
 			if writeSize > PACKET_SIZE:
 				writeSize = PACKET_SIZE
 			data = imageFile.read(writeSize)
-			print "writing {0} bytes.".format(len(data))
-			if len(data) < PACKET_SIZE:
-				print map(hex,map(ord,data))
 			if len(data) == 0:
-				print "100%"
+				print "Error.  Read 0 bytes from file."
 				imageFile.close()
-				break
+				return -1
 			data = struct.pack("B",len(data) - 1)[0] + data
-			print "Data length:", len(data)
-			print "First byte in data:", struct.unpack("B",data[0])[0]
 			checksum = self.checksum(data) 
 			for datum in data:
 				self.serialPort.write(datum)
-			print "Data checksum:", checksum
 			self.serialPort.write(struct.pack("B",checksum))
 			
 			if not self.expect(ACK):
 				print "Failed to ACK post write."
 				imageFile.close()
 				return -1
-			else:
-				print "Acked post."
 
 			# Increment address.
 			written += (len(data) - 1)
-			print "{0} %".format(written*100.0/imageSize)
-			print "Written {0} of {1}".format(written,imageSize)
+			progress = written*100.0 / imageSize
+			sys.stdout.write("\r%d%%" %progress)
+			sys.stdout.flush()
+			#if progress % 10 < 0.1:
+			#	sys.stdout.write("{0}% ".format(progress))
+			#	sys.stdout.flush()
 			writeNumber += 1
-			print "Write number:", writeNumber
 			if written >= imageSize:
 				break
 			time.sleep(0.02)
-			print ""
 		return 1
 
 	
@@ -266,7 +258,6 @@ class loader:
 		if not self.expect(ACK):
 			return -1
 		else:
-			print "Cleared write protection."
 			return 1
 		
 
@@ -307,7 +298,7 @@ if __name__ == "__main__":
 	elif productID not in ldr.supportedChips:
 		print "{0} not supported.".format(printHex(productID))
 	else:
-		print "Product ID:", printHex(productID)
+		print "Product ID:", "".join(printHex(productID))
 
 	# If flashing, erase and flash.
 	if (ldr.command(ERASE) > 0):
@@ -323,25 +314,22 @@ if __name__ == "__main__":
 		print "Failed to clear write protection."
 		exit(-1)
 	
+	# Write the image. 
+	print "Writing image."
 	if (ldr.write(args.image) > 0):
 		print "Write successful."
 	else:
 		print "Failed to write."
 		exit(-1)
 	
+	# Send the go command to make the stuff run.
 	if (ldr.command(GO) > 0):
 		print "GO successful."
 	else:
 		print "No GO."
 	
-	# Device is reset after WPUN, so have to reconnect to boot loader.
-#	print "Reconnecting to bootloader."
-#	time.sleep(5)
-#	if(ldr.connectToBl()):
-#		print "Reconnected to bootloader."
-#	else:
-#		print "Failed to reconnect to bootloader."
-#		exit(-1)
+	ldr.bootLow()
+	
 
 
 	
