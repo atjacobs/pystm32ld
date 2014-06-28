@@ -1,12 +1,13 @@
 #!/usr/bin/env python
 
 import serial, struct, os, time, sys
-import argparse
+import argparse, hashlib
 
 parser = argparse.ArgumentParser(description="Boot loader for stm32.")
 parser.add_argument("--port", "-p", default="/dev/ttyUSB0",help="Serial device")
 parser.add_argument("--baudrate", "-b", default=115200, help="Baudrate")
 parser.add_argument("--image", "-i", default="test.bin", help="Binary image name")
+parser.add_argument("--output", "-o", help="Where to store the read file.")
 
 # TO-DO: make these arguments do stuff.
 parser.add_argument("--boot_enable", "-e",help="Use GPIO to put the device in boot mode.")
@@ -22,8 +23,10 @@ ERASE = "\x44"
 WPUN = "\x73"
 WM = "\x31"
 GO = "\x21"
+RPUN = "\x92"
 
 STM32_FLASH_START_ADDRESS = "\x08\x00\x00\x00"
+FLASH_SIGNATURE_ADDRESS = "\x08\x0F\xFF\xF0"
 
 PACKET_SIZE = 256
 
@@ -51,15 +54,6 @@ class loader:
 		os.system("echo high > /sys/class/gpio/gpio115/direction")
 		time.sleep(0.5)
 	
-	def resetRelease(self):
-		# Release line
-		os.system("echo in > /sys/class/gpio/gpio115/direction")
-	
-	def resetHold(self):
-		# Make the line an output again
-		#os.system("echo in > /sys/class/gpio/gpio115/direction")
-		os.system("echo high > /sys/class/gpio/gpio115/direction")
-
 	def bootLow(self):
 		# Lower the boot line.
 		os.system("echo low > /sys/class/gpio/gpio112/direction")
@@ -76,6 +70,13 @@ class loader:
 
 	def byteToHex(self, datum):
 		return hex(struct.unpack("B",datum)[0])
+		
+	def checksum(self,data):
+		#return reduce(lambda x,y:x+y, map(ord, data))
+		cksm = 0
+		for datum in data:
+			cksm ^= ord(datum)
+		return cksm & 255
 	
 	def command(self,command):
 		if not command in self.commands:
@@ -88,7 +89,9 @@ class loader:
 		elif command == ERASE:
 			return self.erase()
 		elif command == WPUN:
-			return self.unprotect()
+			return self.writeUnprotect()
+		elif command == RPUN:
+			return self.readUnprotect()
 		elif command == GO:
 			return self.go()
 
@@ -186,78 +189,100 @@ class loader:
 			return -1
 		return 1
 
+	def hashFile(afile, hasher, blocksize=65536):
+		buf = afile.read(blocksize)
+		while len(buf) > 0:
+			hasher.update(buf)
+			buf = afile.read(blocksize)
+		return hasher.digest()
 
+	def resetRelease(self):
+		# Release line
+		os.system("echo in > /sys/class/gpio/gpio115/direction")
+	
+	def resetHold(self):
+		# Make the line an output again
+		#os.system("echo in > /sys/class/gpio/gpio115/direction")
+		os.system("echo high > /sys/class/gpio/gpio115/direction")
 	
 	def write(self,image):
 		# See how long the input file is.
 		imageFile = open(image)
 		imageSize = os.stat(image).st_size
 		written = 0
-		writeNumber = 0
-		address = STM32_FLASH_START_ADDRESS
 		while True:
-			# Send write command.
-			self.serialPort.write("\x31\xCE")
-			if not self.expect(ACK):
-				print "Failed to ACK pre write."
-				imageFile.close()
-				return -1
-			
-			#Send address + checksum
+			# Write the image block by block
 			address = struct.pack(">I",struct.unpack(">I",STM32_FLASH_START_ADDRESS)[0] + written)
-			checksum = self.checksum(address) 
-			for datum in address:
-				self.serialPort.write(datum)
-			self.serialPort.write(struct.pack("B",checksum))
-			
-			if not self.expect(ACK):
-				print "Address ACK failed."
-				imageFile.close()
-				return -1
 			
 			# Send data size, data, and checksum.
 			writeSize = imageSize - written
 			if writeSize > PACKET_SIZE:
 				writeSize = PACKET_SIZE
 			data = imageFile.read(writeSize)
-			if len(data) == 0:
-				print "Error.  Read 0 bytes from file."
-				imageFile.close()
-				return -1
-			data = struct.pack("B",len(data) - 1)[0] + data
-			checksum = self.checksum(data) 
-			for datum in data:
-				self.serialPort.write(datum)
-			self.serialPort.write(struct.pack("B",checksum))
-			
-			if not self.expect(ACK):
-				print "Failed to ACK post write."
-				imageFile.close()
-				return -1
-
-			# Increment address.
-			written += (len(data) - 1)
+			written += len(data)
+			if self.writeBlock(data, address) < 1:
+				print "Failed to write block", address
+			# Print progress
 			progress = written*100.0 / imageSize
 			sys.stdout.write("\r%d%%" %progress)
 			sys.stdout.flush()
-			#if progress % 10 < 0.1:
-			#	sys.stdout.write("{0}% ".format(progress))
-			#	sys.stdout.flush()
-			writeNumber += 1
 			if written >= imageSize:
+				print ""
 				break
-			time.sleep(0.02)
 		return 1
 
-	
-	def checksum(self,data):
-		#return reduce(lambda x,y:x+y, map(ord, data))
-		cksm = 0
+	def writeBlock(self,data, address):			
+		# For some reason, it's necessary to wait just a sec.
+		time.sleep(0.01)
+		# Send write command.
+		self.serialPort.write("\x31\xCE")
+		if not self.expect(ACK):
+			print "Failed to ACK pre write."
+			imageFile.close()
+			return -1
+
+		#Send address + checksum
+		checksum = self.checksum(address) 
+		for datum in address:
+			self.serialPort.write(datum)
+		self.serialPort.write(struct.pack("B",checksum))
+		
+		if not self.expect(ACK):
+			print "Address ACK failed."
+			imageFile.close()
+			return -1
+		
+		if len(data) == 0:
+			print "Error.  Data size is zero."
+			imageFile.close()
+			return -1
+		data = struct.pack("B",len(data) - 1)[0] + data
+		checksum = self.checksum(data) 
 		for datum in data:
-			cksm ^= ord(datum)
-		return cksm & 255
+			self.serialPort.write(datum)
+		self.serialPort.write(struct.pack("B",checksum))
+		
+		if not self.expect(ACK):
+			print "Failed to ACK post write."
+			imageFile.close()
+			return -1
+		return 1
+
+
+	def readUnprotect(self):
+		# sent the command.
+		# Note: system will go into reset after this command.
+		self.serialPort.write("\x92\x6D")
+		if not self.expect(ACK):
+			return -1
+		else:
+			print "About about to read unprotect."
+		if not self.expect(ACK):
+			return -1
+		else:
+			return 1
 	
-	def unprotect(self):
+	def writeUnprotect(self):
 		# Unprotect memory.
 		self.serialPort.write("\x73\x8C")
 		if not self.expect(ACK):
@@ -309,40 +334,82 @@ if __name__ == "__main__":
 	else:
 		print "Product ID:", "".join(printHex(productID))
 
-	# If flashing, erase and flash.
-	if (ldr.command(ERASE) > 0):
-		print "erase successful."
-	else:
-		print "Failed to erase device."
-		exit(-1)	
+	if args.image:
+		# If flashing, erase and flash.
+		if (ldr.command(ERASE) > 0):
+			print "erase successful."
+		else:
+			print "Failed to erase device."
+			exit(-1)	
+		
+		# Clear write protection.
+		ldr.resetRelease()
+		if (ldr.command(WPUN) > 0):
+			print "Cleared write protection."
+		else:
+			print "Failed to clear write protection."
+			exit(-1)
+		
+		# reset the reset line
+		ldr.resetHold()
+		# Give her a bit to wake up.
+		time.sleep(.5)
+			
+		# Connect to the boot loader.
+		if(ldr.connectToBl()):
+			print "Connected to bootloader."
+		else:
+			exit(-1)
+		
+		# Write the image. 
+		print "Writing image."
+		if (ldr.write(args.image) > 0):
+			print "Write successful."
+		else:
+			print "Failed to write."
+			exit(-1)
+		
+		# Send the go command to make the stuff run.
+		if (ldr.command(GO) > 0):
+			print "GO successful."
+		else:
+			print "No GO."
+			exit(-1)
 	
-	# Clear write protection.
-	ldr.resetRelease()
-	if (ldr.command(WPUN) > 0):
-		print "Cleared write protection."
-	else:
-		print "Failed to clear write protection."
-		exit(-1)
-	ldr.resetHold()
-	time.sleep(.5)
-	ldr.connectToBl()
-	
-	# Write the image. 
-	print "Writing image."
-	if (ldr.write(args.image) > 0):
-		print "Write successful."
-	else:
-		print "Failed to write."
-		exit(-1)
-	
-	# Send the go command to make the stuff run.
-	if (ldr.command(GO) > 0):
-		print "GO successful."
-	else:
-		print "No GO."
+#	if args.output:
+#		
+#		# Clear read protection.
+#		ldr.resetRelease()
+#		if (ldr.command(RPUN) > 0):
+#			print "Cleared write protection."
+#		else:
+#			print "Failed to clear write protection."
+#			exit(-1)
+#		
+#		# reset the reset line
+#		ldr.resetHold()
+#		# Give her a bit to wake up.
+#		time.sleep(.5)
+#			
+#		# Connect to the boot loader.
+#		if(ldr.connectToBl()):
+#			print "Connected to bootloader."
+#		else:
+#			exit(-1)
+#		
+#		# read the image. 
+#		print "Reading the image."
+#		if (ldr.write(args.image) > 0):
+#			print "Read successful."
+#		else:
+#			print "Failed to write."
+#			exit(-1)
+		
 	
 	ldr.bootLow()
 	
+	ldr.serialPort.close()
+	exit(0)
 
 
 	
