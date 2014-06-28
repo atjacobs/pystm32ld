@@ -7,7 +7,6 @@ parser = argparse.ArgumentParser(description="Boot loader for stm32.")
 parser.add_argument("--port", "-p", default="/dev/ttyUSB0",help="Serial device")
 parser.add_argument("--baudrate", "-b", default=115200, help="Baudrate")
 parser.add_argument("--image", "-i", default="test.bin", help="Binary image name")
-parser.add_argument("--output", "-o", help="Where to store the read file.")
 
 # TO-DO: make these arguments do stuff.
 parser.add_argument("--boot_enable", "-e",help="Use GPIO to put the device in boot mode.")
@@ -24,6 +23,7 @@ WPUN = "\x73"
 WM = "\x31"
 GO = "\x21"
 RPUN = "\x92"
+RM = "\x11"
 
 STM32_FLASH_START_ADDRESS = "\x08\x00\x00\x00"
 FLASH_SIGNATURE_ADDRESS = "\x08\x0F\xFF\xF0"
@@ -195,6 +195,56 @@ class loader:
 			hasher.update(buf)
 			buf = afile.read(blocksize)
 		return hasher.digest()
+	
+	def readBlock(self,address, length):
+		# Send read command.
+		print "In waiting before command:", self.serialPort.inWaiting()
+		self.serialPort.write("\x11\xEE")
+		print "In waiting after command:", self.serialPort.inWaiting()
+		if not self.expect(ACK):
+			print "Failed to ACK pre read."
+			return -1
+		print "In waiting after 1st ACK:", self.serialPort.inWaiting()
+
+		#Send address + checksum
+		checksum = self.checksum(address) 
+		for datum in address:
+			self.serialPort.write(datum)
+		self.serialPort.write(struct.pack("B",checksum))
+		print "In waiting address and checksum:", self.serialPort.inWaiting()
+		
+		if not self.expect(ACK):
+			print "Read address ACK failed."
+			return -1
+		print "In waiting after 2nd ACK:", self.serialPort.inWaiting()
+		
+		#Send length + checksum
+		self.serialPort.write(struct.pack("B",(length - 1)))
+		self.serialPort.write(struct.pack("B",~(length - 1) & 0xFF))
+		print "In waiting after length and checksum:", self.serialPort.inWaiting()
+		
+		if not self.expect(ACK):
+			print "Read length ACK failed."
+			return -1
+		print "In waiting after 3rd ACK:", self.serialPort.inWaiting()
+		
+		
+		return self.serialPort.read(length)
+
+		
+
+	def readUnprotect(self):
+		# sent the command.
+		# Note: system will go into reset after this command.
+		self.serialPort.write("\x92\x6D")
+		if not self.expect(ACK):
+			return -1
+		else:
+			print "About about to read unprotect."
+		if not self.expect(ACK):
+			return -1
+		else:
+			return 1
 
 	def resetRelease(self):
 		# Release line
@@ -232,13 +282,10 @@ class loader:
 		return 1
 
 	def writeBlock(self,data, address):			
-		# For some reason, it's necessary to wait just a sec.
-		time.sleep(0.01)
 		# Send write command.
 		self.serialPort.write("\x31\xCE")
 		if not self.expect(ACK):
 			print "Failed to ACK pre write."
-			imageFile.close()
 			return -1
 
 		#Send address + checksum
@@ -249,12 +296,10 @@ class loader:
 		
 		if not self.expect(ACK):
 			print "Address ACK failed."
-			imageFile.close()
 			return -1
 		
 		if len(data) == 0:
 			print "Error.  Data size is zero."
-			imageFile.close()
 			return -1
 		data = struct.pack("B",len(data) - 1)[0] + data
 		checksum = self.checksum(data) 
@@ -264,24 +309,10 @@ class loader:
 		
 		if not self.expect(ACK):
 			print "Failed to ACK post write."
-			imageFile.close()
 			return -1
 		return 1
 
 
-	def readUnprotect(self):
-		# sent the command.
-		# Note: system will go into reset after this command.
-		self.serialPort.write("\x92\x6D")
-		if not self.expect(ACK):
-			return -1
-		else:
-			print "About about to read unprotect."
-		if not self.expect(ACK):
-			return -1
-		else:
-			return 1
-	
 	def writeUnprotect(self):
 		# Unprotect memory.
 		self.serialPort.write("\x73\x8C")
@@ -375,35 +406,6 @@ if __name__ == "__main__":
 		else:
 			print "No GO."
 			exit(-1)
-	
-#	if args.output:
-#		
-#		# Clear read protection.
-#		ldr.resetRelease()
-#		if (ldr.command(RPUN) > 0):
-#			print "Cleared write protection."
-#		else:
-#			print "Failed to clear write protection."
-#			exit(-1)
-#		
-#		# reset the reset line
-#		ldr.resetHold()
-#		# Give her a bit to wake up.
-#		time.sleep(.5)
-#			
-#		# Connect to the boot loader.
-#		if(ldr.connectToBl()):
-#			print "Connected to bootloader."
-#		else:
-#			exit(-1)
-#		
-#		# read the image. 
-#		print "Reading the image."
-#		if (ldr.write(args.image) > 0):
-#			print "Read successful."
-#		else:
-#			print "Failed to write."
-#			exit(-1)
 		
 	
 	ldr.bootLow()
