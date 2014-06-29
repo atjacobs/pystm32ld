@@ -189,7 +189,7 @@ class loader:
 			return -1
 		return 1
 
-	def hashFile(afile, hasher, blocksize=65536):
+	def hashFile(self, afile, hasher, blocksize=65536):
 		buf = afile.read(blocksize)
 		while len(buf) > 0:
 			hasher.update(buf)
@@ -400,13 +400,19 @@ if __name__ == "__main__":
 			print "Failed to write."
 			exit(-1)
 		
+		# Write the hash of the image
+		hsh = ldr.hashFile(open(args.image,"rb"),hashlib.sha256())
+		if ldr.writeBlock(hsh,"\x08\x0F\xFF\xDF") < 0:
+			print "Failed to write hash."
+			exit(-1)
+		
 		# Send the go command to make the stuff run.
 		if (ldr.command(GO) > 0):
 			print "GO successful."
 		else:
 			print "No GO."
 			exit(-1)
-		
+
 	
 	ldr.bootLow()
 	
