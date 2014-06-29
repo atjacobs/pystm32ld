@@ -271,7 +271,8 @@ class loader:
 			data = imageFile.read(writeSize)
 			written += len(data)
 			if self.writeBlock(data, address) < 1:
-				print "Failed to write block", address
+				print "Failed to write block"
+				return -1
 			# Print progress
 			progress = written*100.0 / imageSize
 			sys.stdout.write("\r%d%%" %progress)
