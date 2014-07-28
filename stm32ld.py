@@ -8,11 +8,6 @@ parser.add_argument("--port", "-p", default="/dev/ttyUSB0",help="Serial device")
 parser.add_argument("--baudrate", "-b", default=115200, help="Baudrate")
 parser.add_argument("--image", "-i", default="test.bin", help="Binary image name")
 
-# TO-DO: make these arguments do stuff.
-parser.add_argument("--boot_enable", "-e",help="Use GPIO to put the device in boot mode.")
-parser.add_argument("--boot-line", "-l", default=112, help="GPIO for boot line.")
-parser.add_argument("--reset-line", "-r", default=115, help="GPIO for reboot line.")
-
 args = parser.parse_args()
 
 ACK = "\x79"
@@ -33,40 +28,10 @@ PACKET_SIZE = 256
 printHex = lambda x: map(hex,map(ord,x))
 
 class loader:
-	def __init__(self,port="/dev/ttyO4",baudrate=115200):
-		if not os.path.exists("/dev/ttyO4"):
-			os.system("echo \"BB-UART4\" > /sys/devices/bone_capemgr.9/slots")
-		if not os.path.exists("/sys/class/gpio/gpio112"):
-			os.system("echo 112 > /sys/class/gpio/export")
-		if not os.path.exists("/sys/class/gpio/gpio115"):
-			os.system("echo 115 > /sys/class/gpio/export")
+	def __init__(self,port="/dev/ttyUSB0",baudrate=115200):
 		self.serialPort = serial.Serial(port=port,baudrate=baudrate,parity=serial.PARITY_EVEN,stopbits=1,bytesize=serial.EIGHTBITS, timeout=1)
 		self.commands = "\x00"
-		self.supportedChips = ["\x04\x13"]
-	
-	def bootMode(self):
-		# Raise boot line.
-		os.system("echo high > /sys/class/gpio/gpio112/direction")
-		time.sleep(.5)
-		# Cycle reboot line
-		os.system("echo low > /sys/class/gpio/gpio115/direction")
-		time.sleep(.5)
-		os.system("echo high > /sys/class/gpio/gpio115/direction")
-		time.sleep(0.5)
-	
-	def bootLow(self):
-		# Lower the boot line.
-		os.system("echo low > /sys/class/gpio/gpio112/direction")
-		time.sleep(.5)
-
-	def reset(self):
-		# Ensure that the boot line is not high.
-		os.system("echo low > /sys/class/gpio/gpio112/direction")
-		time.sleep(0.5)
-		# Cycle reboot line
-		os.system("echo low > /sys/class/gpio/gpio115/direction")
-		time.sleep(.5)
-		os.system("echo high > /sys/class/gpio/gpio115/direction")
+		self.supportedChips = ["\x04\x13"]	
 
 	def byteToHex(self, datum):
 		return hex(struct.unpack("B",datum)[0])
@@ -246,15 +211,6 @@ class loader:
 		else:
 			return 1
 
-	def resetRelease(self):
-		# Release line
-		os.system("echo in > /sys/class/gpio/gpio115/direction")
-	
-	def resetHold(self):
-		# Make the line an output again
-		#os.system("echo in > /sys/class/gpio/gpio115/direction")
-		os.system("echo high > /sys/class/gpio/gpio115/direction")
-	
 	def write(self,image):
 		# See how long the input file is.
 		imageFile = open(image)
@@ -327,20 +283,12 @@ class loader:
 			return 1
 		
 
-		
-
-
-
-
-# sp = serial.open(port="/dev/tty04",baudrate=115200,parity=serial.PARITY_EVEN,stopbits=1)
 
 
 if __name__ == "__main__":
 	ldr = loader(port=args.port, baudrate=args.baudrate)
 	
-	# Boot the device into BL mode.
-	ldr.reset()
-	ldr.bootMode()
+	# Boot the device into BL mode first!.
 	
 	# Connect to the boot loader.
 	if(ldr.connectToBl()):
@@ -375,19 +323,16 @@ if __name__ == "__main__":
 			exit(-1)	
 		
 		# Clear write protection.
-		ldr.resetRelease()
 		if (ldr.command(WPUN) > 0):
 			print "Cleared write protection."
 		else:
 			print "Failed to clear write protection."
 			exit(-1)
-		
-		# reset the reset line
-		ldr.resetHold()
-		# Give her a bit to wake up.
-		time.sleep(.5)
 			
 		# Connect to the boot loader.
+		# NOTE: the STM forces a reset by driving the !reset line low.
+		# So let the line go low, and make sure the bootloader conditions
+		# are met (e.g. by raising the boot line).
 		if(ldr.connectToBl()):
 			print "Connected to bootloader."
 		else:
@@ -415,14 +360,8 @@ if __name__ == "__main__":
 			exit(-1)
 
 	
-	ldr.bootLow()
 	
 	ldr.serialPort.close()
 	exit(0)
-
-
-	
-	
-
 
 
