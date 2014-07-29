@@ -210,6 +210,12 @@ class loader:
 			return -1
 		else:
 			return 1
+	
+
+	def verify(self,f):
+		# TODO: Make this work.
+		# Hash the file and verify that it is on the rti.
+		return True
 
 	def write(self,image):
 		# See how long the input file is.
