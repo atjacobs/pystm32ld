@@ -19,8 +19,13 @@ ACK = "\x79"
 GET = "\x00"
 GID = "\x02"
 ERASE = "\x44"
+WPUN = "\x73"
+WM = "\x31"
+GO = "\x21"
+
 STM32_FLASH_START_ADDRESS = "\x08\x00\x00\x00"
 
+PACKET_SIZE = 256
 
 printHex = lambda x: map(hex,map(ord,x))
 
@@ -68,6 +73,10 @@ class loader:
 			return self.getID()
 		elif command == ERASE:
 			return self.erase()
+		elif command == WPUN:
+			return self.unprotect()
+		elif command == GO:
+			return self.go()
 
 	def connectToBl(self):
 		# Flush the input.
@@ -95,8 +104,13 @@ class loader:
 			continue
 	
 	def expect(self, data):
-		#print "Looking for", map(hex,map(ord,data))
 		dataRead = self.serialPort.read(len(data))
+		if data in dataRead:
+			return True
+		else:
+			print "Expected {0}, received {1}".format(map(hex,map(ord,data)),map(hex,map(ord,dataRead)))
+			return False
+			
 		return data in dataRead
 
 	def getVersion(self):
@@ -121,7 +135,6 @@ class loader:
 		if not self.expect(ACK):
 			return -1
 		numberOfBytes = struct.unpack("B",self.serialPort.read())[0] + 1
-		print "{0} bytes in ID.".format(numberOfBytes)
 		productID = self.serialPort.read(numberOfBytes)
 		if (not self.expect(ACK)) or (len(productID) < numberOfBytes):
 			print "Failed to ACK after GID command."
@@ -146,7 +159,117 @@ class loader:
 			self.serialPort.timeout = 1
 			return 1
 	
-	def write(self, image):
+	def go(self):
+		self.serialPort.write("\x21\xDE")
+		if not self.expect(ACK):
+			print "No ACK from Go command."
+			return -1
+		address = STM32_FLASH_START_ADDRESS
+		checksum = self.checksum(address) 
+		for datum in address:
+			self.serialPort.write(datum)
+		print "Checksum of address", checksum
+		self.serialPort.write(struct.pack("B",checksum))
+		
+		if not self.expect(ACK):
+			print "GO address ACK failed."
+			return -1
+		return 1
+
+
+	
+	def write(self,image):
+		# See how long the input file is.
+		imageFile = open(image)
+		imageSize = os.stat(image).st_size
+		written = 0
+		writeNumber = 0
+		print "Writing {0} bytes".format(imageSize)
+		address = STM32_FLASH_START_ADDRESS
+		while True:
+			# Send write command.
+			self.serialPort.write("\x31\xCE")
+			if not self.expect(ACK):
+				print "Failed to ACK pre write."
+				imageFile.close()
+				return -1
+			
+			#Send address + checksum
+			print "writing to:", struct.unpack(">I",STM32_FLASH_START_ADDRESS)[0] + written
+			address = struct.pack(">I",struct.unpack(">I",STM32_FLASH_START_ADDRESS)[0] + written)
+			checksum = self.checksum(address) 
+			for datum in address:
+				self.serialPort.write(datum)
+			print "Checksum of address", checksum
+			self.serialPort.write(struct.pack("B",checksum))
+			
+			if not self.expect(ACK):
+				print "Address ACK failed."
+				imageFile.close()
+				return -1
+			
+			# Send data size, data, and checksum.
+			writeSize = imageSize - written
+			if writeSize > PACKET_SIZE:
+				writeSize = PACKET_SIZE
+			data = imageFile.read(writeSize)
+			print "writing {0} bytes.".format(len(data))
+			if len(data) < PACKET_SIZE:
+				print map(hex,map(ord,data))
+			if len(data) == 0:
+				print "100%"
+				imageFile.close()
+				break
+			data = struct.pack("B",len(data) - 1)[0] + data
+			print "Data length:", len(data)
+			print "First byte in data:", struct.unpack("B",data[0])[0]
+			checksum = self.checksum(data) 
+			for datum in data:
+				self.serialPort.write(datum)
+			print "Data checksum:", checksum
+			self.serialPort.write(struct.pack("B",checksum))
+			
+			if not self.expect(ACK):
+				print "Failed to ACK post write."
+				imageFile.close()
+				return -1
+			else:
+				print "Acked post."
+
+			# Increment address.
+			written += (len(data) - 1)
+			print "{0} %".format(written*100.0/imageSize)
+			print "Written {0} of {1}".format(written,imageSize)
+			writeNumber += 1
+			print "Write number:", writeNumber
+			if written >= imageSize:
+				break
+			time.sleep(0.02)
+			print ""
+		return 1
+
+	
+	def checksum(self,data):
+		#return reduce(lambda x,y:x+y, map(ord, data))
+		cksm = 0
+		for datum in data:
+			cksm ^= ord(datum)
+		return cksm & 255
+	
+	def unprotect(self):
+		# Unprotect memory.
+		self.serialPort.write("\x73\x8C")
+		if not self.expect(ACK):
+			return -1
+		else:
+			print "About about to write unprotect."
+		if not self.expect(ACK):
+			return -1
+		else:
+			print "Cleared write protection."
+			return 1
+		
+
 		
 
 
@@ -180,17 +303,45 @@ if __name__ == "__main__":
 	productID = ldr.command(GID)
 	if productID < 0:
 		print "Failed to get product ID."
+		exit(-1)
 	elif productID not in ldr.supportedChips:
 		print "{0} not supported.".format(printHex(productID))
 	else:
 		print "Product ID:", printHex(productID)
+
+	## If flashing, erase and flash.
+	#if (ldr.command(ERASE) > 0):
+	#	print "erase successful."
+	#else:
+	#	print "Failed to erase device."
+	#	exit(-1)	
 	
-	# If flashing, erase and flash.
-	if (ldr.command(ERASE) > 0):
-		print "erase successful."
+	# Clear write protection.
+	if (ldr.command(WPUN) > 0):
+		print "Cleared write protection."
 	else:
-		print "Failed to erase device."
+		print "Failed to clear write protection."
+		exit(-1)
 	
+	if (ldr.write(args.image) > 0):
+		print "Write successful."
+	else:
+		print "Failed to write."
+		exit(-1)
+	
+	if (ldr.command(GO) > 0):
+		print "GO successful."
+	else:
+		print "No GO."
+	
+	# Device is reset after WPUN, so have to reconnect to boot loader.
+#	print "Reconnecting to bootloader."
+#	time.sleep(5)
+#	if(ldr.connectToBl()):
+#		print "Reconnected to bootloader."
+#	else:
+#		print "Failed to reconnect to bootloader."
+#		exit(-1)
 
 
 	
